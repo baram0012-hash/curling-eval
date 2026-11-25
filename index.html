@@ -3,45 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>🥌 미니 컬링 수행평가 실전 채점 장부</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>🥌 미니 컬링 수행평가 채점 장부 (아이패드 전용)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
     <!-- SheetJS (엑셀 다운로드용) -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <!-- Firebase SDK -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
     <style>
         body { font-family: 'Noto Sans KR', sans-serif; background-color: #0f172a; color: #f8fafc; -webkit-tap-highlight-color: transparent; }
         .btn-chic { transition: all 0.1s ease-in-out; }
         .btn-chic:active { transform: scale(0.92); }
-        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
     </style>
 </head>
-<body class="min-h-screen flex justify-center items-center">
+<body class="min-h-screen flex justify-center items-start bg-slate-950">
     <div id="app" class="w-full max-w-lg bg-slate-950 min-h-screen shadow-2xl flex flex-col relative border-x border-slate-800"></div>
 
     <script>
-        // ============================================================
-        // 👇 여기 큰따옴표("") 안에 내 파이어베이스 주소를 붙여넣으세요!
-        // ============================================================
-        const firebaseConfig = {
-            databaseURL: "https://curling-score-app-f1a93-default-rtdb.firebaseio.com/"
-        };
-
-        let dbRef = null;
-        try {
-            if (firebaseConfig.databaseURL && !firebaseConfig.databaseURL.includes("여기에_내_파이어베이스_주소")) {
-                if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-                dbRef = firebase.database().ref('curling_eval_v3');
-            }
-        } catch (e) {
-            console.error("파이어베이스 연결 오류:", e);
-        }
-
         // 1~9반 실제 출석부 명단
         const INITIAL_ROSTERS = {
             1: [
@@ -115,55 +97,111 @@
         };
 
         const DEFAULT_COUNTS = { draw: 0, guard: 0, takeout: 0 };
+        const PRIMARY_KEY = 'curling_eval_ipad_main_v1';
+        const BACKUP_KEY = 'curling_eval_ipad_backup_v1';
+        const LEGACY_KEYS = ['curling_eval_data_v3', 'curling_eval_data_v2', 'curling_eval_data_v1'];
 
-        let savedData = {};
-        try {
-            const localStr = localStorage.getItem('curling_eval_data_v3');
-            if (localStr) savedData = JSON.parse(localStr);
-        } catch(e) {}
+        function createEmptyData() {
+            const data = {};
+            for (let c = 1; c <= 9; c++) {
+                data[c] = {};
+                (INITIAL_ROSTERS[c] || []).forEach(st => {
+                    data[c][st.number] = { ...DEFAULT_COUNTS };
+                });
+            }
+            return data;
+        }
+
+        function sanitizeData(raw) {
+            const safe = createEmptyData();
+            if (!raw || typeof raw !== 'object') return safe;
+
+            for (let c = 1; c <= 9; c++) {
+                const classObj = raw[c] || raw[String(c)];
+                if (!classObj || typeof classObj !== 'object') continue;
+
+                (INITIAL_ROSTERS[c] || []).forEach(st => {
+                    const stObj = classObj[st.number] || classObj[String(st.number)];
+                    if (!stObj || typeof stObj !== 'object') return;
+
+                    const d = Number(stObj.draw);
+                    const g = Number(stObj.guard);
+                    const t = Number(stObj.takeout);
+
+                    safe[c][st.number] = {
+                        draw: Number.isFinite(d) ? Math.min(4, Math.max(0, Math.floor(d))) : 0,
+                        guard: Number.isFinite(g) ? Math.min(4, Math.max(0, Math.floor(g))) : 0,
+                        takeout: Number.isFinite(t) ? Math.min(3, Math.max(0, Math.floor(t))) : 0
+                    };
+                });
+            }
+            return safe;
+        }
+
+        function hasAnyScore(data) {
+            for (let c = 1; c <= 9; c++) {
+                const classObj = data[c] || {};
+                for (const num of Object.keys(classObj)) {
+                    const s = classObj[num] || {};
+                    if ((s.draw || 0) > 0 || (s.guard || 0) > 0 || (s.takeout || 0) > 0) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function safeReadJson(key) {
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) return null;
+                return sanitizeData(JSON.parse(raw));
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function loadSavedData() {
+            const mainData = safeReadJson(PRIMARY_KEY);
+            const backupData = safeReadJson(BACKUP_KEY);
+
+            if (mainData && hasAnyScore(mainData)) return mainData;
+            if (backupData && hasAnyScore(backupData)) return backupData;
+
+            for (const legacyKey of LEGACY_KEYS) {
+                const legacyData = safeReadJson(legacyKey);
+                if (legacyData && hasAnyScore(legacyData)) return legacyData;
+            }
+
+            return mainData || backupData || createEmptyData();
+        }
+
+        function nowTimeText() {
+            const d = new Date();
+            return d.toTimeString().slice(0, 8);
+        }
 
         const state = {
             selectedClass: 1,
-            classesData: savedData
+            classesData: loadSavedData(),
+            lastSavedAt: nowTimeText()
         };
 
-        if (dbRef) {
-            dbRef.on('value', (snapshot) => {
-                const remoteData = snapshot.val();
-                if (remoteData && typeof remoteData === 'object') {
-                    state.classesData = remoteData;
-                    try {
-                        localStorage.setItem('curling_eval_data_v3', JSON.stringify(state.classesData));
-                    } catch(e) {}
-                    render();
-                }
-            });
-        }
-
-        function initData() {
-            for (let c = 1; c <= 9; c++) {
-                if (!state.classesData[c]) state.classesData[c] = {};
-                const roster = INITIAL_ROSTERS[c] || [];
-                roster.forEach(st => {
-                    if (!state.classesData[c][st.number]) {
-                        state.classesData[c][st.number] = { ...DEFAULT_COUNTS };
-                    }
-                });
-            }
-            saveData();
-        }
-
-        function saveData() {
+        function saveData(data) {
             try {
-                localStorage.setItem('curling_eval_data_v3', JSON.stringify(state.classesData));
-            } catch(e) {}
-            if (dbRef) {
-                dbRef.set(state.classesData).catch(err => console.error("DB 저장 실패:", err));
+                const serialized = JSON.stringify(data);
+                localStorage.setItem(PRIMARY_KEY, serialized);
+                if (hasAnyScore(data)) {
+                    localStorage.setItem(BACKUP_KEY, serialized);
+                }
+                state.lastSavedAt = nowTimeText();
+            } catch (e) {
+                alert('아이패드 저장 공간 확인이 필요합니다. 사파리 비공개(시크릿) 모드는 꺼주세요.');
             }
         }
 
         function calcDrawScore(c) {
-            const count = (c === undefined || c === null) ? 0 : Number(c);
+            const count = Number(c) || 0;
             if (count >= 4) return 40;
             if (count === 3) return 35;
             if (count === 2) return 30;
@@ -172,7 +210,7 @@
         }
 
         function calcGuardScore(c) {
-            const count = (c === undefined || c === null) ? 0 : Number(c);
+            const count = Number(c) || 0;
             if (count >= 4) return 40;
             if (count === 3) return 35;
             if (count === 2) return 30;
@@ -181,7 +219,7 @@
         }
 
         function calcTakeoutScore(c) {
-            const count = (c === undefined || c === null) ? 0 : Number(c);
+            const count = Number(c) || 0;
             if (count >= 3) return 20;
             if (count === 2) return 15;
             return 10;
@@ -200,20 +238,53 @@
 
         function changeScore(num, cat, delta) {
             const cNum = state.selectedClass;
-            if (!state.classesData[cNum][num]) {
-                state.classesData[cNum][num] = { ...DEFAULT_COUNTS };
-            }
-            const sData = state.classesData[cNum][num];
+            if (!state.classesData[cNum]) state.classesData[cNum] = {};
+            if (!state.classesData[cNum][num]) state.classesData[cNum][num] = { ...DEFAULT_COUNTS };
+
             const maxVal = (cat === 'takeout') ? 3 : 4;
+            const currentVal = Number(state.classesData[cNum][num][cat]) || 0;
+            const nextVal = Math.min(maxVal, Math.max(0, currentVal + delta));
+            if (nextVal === currentVal) return;
 
-            const currentVal = (sData[cat] === undefined || sData[cat] === null) ? 0 : sData[cat];
-            let newVal = currentVal + delta;
-            if (newVal < 0) newVal = 0;
-            if (newVal > maxVal) newVal = maxVal;
-
-            sData[cat] = newVal;
-            saveData();
+            state.classesData[cNum][num][cat] = nextVal;
+            saveData(state.classesData);
             render();
+        }
+
+        function downloadExcel(cNum) {
+            const roster = INITIAL_ROSTERS[cNum] || [];
+            const excelRows = roster.map(st => {
+                const rawData = (state.classesData[cNum] && state.classesData[cNum][st.number]) || DEFAULT_COUNTS;
+                const sData = {
+                    draw: Number(rawData.draw) || 0,
+                    guard: Number(rawData.guard) || 0,
+                    takeout: Number(rawData.takeout) || 0
+                };
+                const dScore = calcDrawScore(sData.draw);
+                const gScore = calcGuardScore(sData.guard);
+                const tScore = calcTakeoutScore(sData.takeout);
+                const totalScore = dScore + gScore + tScore;
+                const grade = calcGrade(totalScore);
+
+                return {
+                    "반": `1-${cNum}반`,
+                    "번호": st.number,
+                    "성명": st.name,
+                    "성취등급": grade,
+                    "드로우성공개수": sData.draw,
+                    "드로우점수(40)": dScore,
+                    "가드성공개수": sData.guard,
+                    "가드점수(40)": gScore,
+                    "테이크아웃성공개수": sData.takeout,
+                    "테이크아웃점수(20)": tScore,
+                    "최종환산총점(100)": totalScore
+                };
+            });
+
+            const worksheet = XLSX.utils.json_to_sheet(excelRows);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, `1-${cNum}반`);
+            XLSX.writeFile(workbook, `울산여상_1학년_${cNum}반_컬링_수행평가.xlsx`);
         }
 
         function render() {
@@ -225,16 +296,24 @@
 
             app.innerHTML = `
                 <div class="flex flex-col flex-grow bg-slate-950 text-white min-h-screen">
-                    <div class="p-4 bg-slate-900 flex justify-between items-center border-b border-slate-800 sticky top-0 z-10 shadow-md">
-                        <div>
-                            <h2 class="text-sm font-bold text-slate-100">🥌 미니 컬링 수행평가 장부</h2>
-                            <p class="text-[10px] text-teal-400 font-medium">기본 50점(20+20+10) · 최대 100점(40+40+20)</p>
+                    <!-- 헤더 -->
+                    <div class="p-3.5 bg-slate-900 border-b border-slate-800 sticky top-0 z-10 shadow-md space-y-2">
+                        <div class="flex justify-between items-center gap-2">
+                            <div>
+                                <h2 class="text-sm font-bold text-slate-100">🥌 미니 컬링 수행평가 장부</h2>
+                                <p class="text-[10px] text-teal-400 font-medium">기본 50점(20+20+10) · 최대 100점(40+40+20)</p>
+                            </div>
+                            <button onclick="downloadExcel(${cNum})" class="btn-chic text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl font-bold shadow shrink-0">
+                                📊 ${cNum}반 엑셀 다운
+                            </button>
                         </div>
-                        <button onclick="downloadExcel(${cNum})" class="btn-chic text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl font-bold shadow">
-                            📊 ${cNum}반 엑셀 다운
-                        </button>
+                        <div class="text-[10px] text-emerald-300 bg-slate-950/80 px-2.5 py-1.5 rounded-lg border border-slate-800 flex justify-between items-center">
+                            <span>● 아이패드 자동 저장 중 (마지막 저장: ${state.lastSavedAt})</span>
+                            <span class="text-slate-400">오프라인 사용 가능</span>
+                        </div>
                     </div>
 
+                    <!-- 반 선택 탭 (1~9반) -->
                     <div class="bg-slate-900/90 p-2.5 flex overflow-x-auto space-x-1.5 border-b border-slate-800">
                         ${[1,2,3,4,5,6,7,8,9].map(c => `
                             <button onclick="selectClass(${c})" class="px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${c===cNum?'bg-indigo-600 text-white shadow':'bg-slate-800 text-slate-400 hover:bg-slate-700'}">
@@ -243,6 +322,7 @@
                         `).join('')}
                     </div>
 
+                    <!-- 학생 채점 리스트 -->
                     <div class="p-4 flex-grow overflow-y-auto space-y-3 pb-12">
                         <div class="flex justify-between items-center py-1">
                             <span class="text-xs font-bold text-slate-300">1학년 ${cNum}반 학생 (${roster.length}명)</span>
@@ -251,11 +331,11 @@
 
                         <div class="space-y-3">
                             ${roster.map(st => {
-                                const rawData = (state.classesData[cNum] && state.classesData[cNum][st.number]) || {};
+                                const rawData = (state.classesData[cNum] && state.classesData[cNum][st.number]) || DEFAULT_COUNTS;
                                 const sData = {
-                                    draw: rawData.draw ?? DEFAULT_COUNTS.draw,
-                                    guard: rawData.guard ?? DEFAULT_COUNTS.guard,
-                                    takeout: rawData.takeout ?? DEFAULT_COUNTS.takeout
+                                    draw: Number(rawData.draw) || 0,
+                                    guard: Number(rawData.guard) || 0,
+                                    takeout: Number(rawData.takeout) || 0
                                 };
                                 const dScore = calcDrawScore(sData.draw);
                                 const gScore = calcGuardScore(sData.guard);
@@ -320,45 +400,7 @@
             `;
         }
 
-        function downloadExcel(cNum) {
-            const roster = INITIAL_ROSTERS[cNum] || [];
-            let excelRows = [];
-
-            roster.forEach(st => {
-                const rawData = (state.classesData[cNum] && state.classesData[cNum][st.number]) || {};
-                const sData = {
-                    draw: rawData.draw ?? DEFAULT_COUNTS.draw,
-                    guard: rawData.guard ?? DEFAULT_COUNTS.guard,
-                    takeout: rawData.takeout ?? DEFAULT_COUNTS.takeout
-                };
-                const dScore = calcDrawScore(sData.draw);
-                const gScore = calcGuardScore(sData.guard);
-                const tScore = calcTakeoutScore(sData.takeout);
-                const totalScore = dScore + gScore + tScore;
-                const grade = calcGrade(totalScore);
-
-                excelRows.push({
-                    "반": `1-${cNum}반`,
-                    "번호": st.number,
-                    "성명": st.name,
-                    "성취등급": grade,
-                    "드로우성공개수": sData.draw,
-                    "드로우점수(40)": dScore,
-                    "가드성공개수": sData.guard,
-                    "가드점수(40)": gScore,
-                    "테이크아웃성공개수": sData.takeout,
-                    "테이크아웃점수(20)": tScore,
-                    "최종환산총점(100)": totalScore
-                });
-            });
-
-            const worksheet = XLSX.utils.json_to_sheet(excelRows);
-            const workbook = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(workbook, worksheet, `1-${cNum}반`);
-            XLSX.writeFile(workbook, `울산여상_1학년_${cNum}반_컬링_수행평가.xlsx`);
-        }
-
-        initData();
+        saveData(state.classesData);
         render();
     </script>
 </body>
