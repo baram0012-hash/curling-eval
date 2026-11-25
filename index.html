@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>🥌 미니 컬링 수행평가 채점 장부 (아이패드 전용)</title>
+    <title>🥌 미니 컬링 수행평가 채점 장부</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -23,7 +23,17 @@
 <body class="min-h-screen flex justify-center items-start bg-slate-950">
     <div id="app" class="w-full max-w-lg bg-slate-950 min-h-screen shadow-2xl flex flex-col relative border-x border-slate-800"></div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+        // =====================================================================
+        // [수정할 곳] 선생님 파이어베이스 Realtime Database 주소만 따옴표 안에 넣으세요!
+        // 예: "https://ugch-floor-curling-default-rtdb.asia-southeast1.firebasedatabase.app"
+        // =====================================================================
+        const DB_URL = "https://curling-score-app-f1a93-default-rtdb.firebaseio.com/";
+        const DB_PATH = "mini_curling_eval_v1";
+
         // 1~9반 실제 출석부 명단
         const INITIAL_ROSTERS = {
             1: [
@@ -97,41 +107,33 @@
         };
 
         const DEFAULT_COUNTS = { draw: 0, guard: 0, takeout: 0 };
-        const PRIMARY_KEY = 'curling_eval_ipad_main_v1';
-        const BACKUP_KEY = 'curling_eval_ipad_backup_v1';
-        const LEGACY_KEYS = ['curling_eval_data_v3', 'curling_eval_data_v2', 'curling_eval_data_v1'];
+        const CACHE_KEY = 'curling_db_url_cache_v1';
+        const BACKUP_KEY = 'curling_db_url_bak_v1';
 
         function createEmptyData() {
-            const data = {};
+            const d = {};
             for (let c = 1; c <= 9; c++) {
-                data[c] = {};
+                d[c] = {};
                 (INITIAL_ROSTERS[c] || []).forEach(st => {
-                    data[c][st.number] = { ...DEFAULT_COUNTS };
+                    d[c][st.number] = { ...DEFAULT_COUNTS };
                 });
             }
-            return data;
+            return d;
         }
 
         function sanitizeData(raw) {
             const safe = createEmptyData();
             if (!raw || typeof raw !== 'object') return safe;
-
             for (let c = 1; c <= 9; c++) {
                 const classObj = raw[c] || raw[String(c)];
                 if (!classObj || typeof classObj !== 'object') continue;
-
                 (INITIAL_ROSTERS[c] || []).forEach(st => {
                     const stObj = classObj[st.number] || classObj[String(st.number)];
                     if (!stObj || typeof stObj !== 'object') return;
-
-                    const d = Number(stObj.draw);
-                    const g = Number(stObj.guard);
-                    const t = Number(stObj.takeout);
-
                     safe[c][st.number] = {
-                        draw: Number.isFinite(d) ? Math.min(4, Math.max(0, Math.floor(d))) : 0,
-                        guard: Number.isFinite(g) ? Math.min(4, Math.max(0, Math.floor(g))) : 0,
-                        takeout: Number.isFinite(t) ? Math.min(3, Math.max(0, Math.floor(t))) : 0
+                        draw: Math.min(4, Math.max(0, Number(stObj.draw) || 0)),
+                        guard: Math.min(4, Math.max(0, Number(stObj.guard) || 0)),
+                        takeout: Math.min(3, Math.max(0, Number(stObj.takeout) || 0))
                     };
                 });
             }
@@ -143,85 +145,161 @@
                 const classObj = data[c] || {};
                 for (const num of Object.keys(classObj)) {
                     const s = classObj[num] || {};
-                    if ((s.draw || 0) > 0 || (s.guard || 0) > 0 || (s.takeout || 0) > 0) {
-                        return true;
-                    }
+                    if ((s.draw || 0) > 0 || (s.guard || 0) > 0 || (s.takeout || 0) > 0) return true;
                 }
             }
             return false;
         }
 
-        function safeReadJson(key) {
-            try {
-                const raw = localStorage.getItem(key);
-                if (!raw) return null;
-                return sanitizeData(JSON.parse(raw));
-            } catch (e) {
-                return null;
+        function readLocalCache() {
+            const keys = [CACHE_KEY, BACKUP_KEY, 'curling_sync_cache_v1', 'curling_sync_backup_v1', 'curling_safari_main_v1', 'curling_eval_data_v3'];
+            let fallback = null;
+            for (const key of keys) {
+                try {
+                    const raw = localStorage.getItem(key);
+                    if (!raw) continue;
+                    const parsed = sanitizeData(JSON.parse(raw));
+                    if (hasAnyScore(parsed)) return parsed;
+                    if (!fallback) fallback = parsed;
+                } catch (e) {}
             }
-        }
-
-        function loadSavedData() {
-            const mainData = safeReadJson(PRIMARY_KEY);
-            const backupData = safeReadJson(BACKUP_KEY);
-
-            if (mainData && hasAnyScore(mainData)) return mainData;
-            if (backupData && hasAnyScore(backupData)) return backupData;
-
-            for (const legacyKey of LEGACY_KEYS) {
-                const legacyData = safeReadJson(legacyKey);
-                if (legacyData && hasAnyScore(legacyData)) return legacyData;
-            }
-
-            return mainData || backupData || createEmptyData();
+            return fallback || createEmptyData();
         }
 
         function nowTimeText() {
-            const d = new Date();
-            return d.toTimeString().slice(0, 8);
+            return new Date().toTimeString().slice(0, 8);
         }
 
         const state = {
             selectedClass: 1,
-            classesData: loadSavedData(),
-            lastSavedAt: nowTimeText()
+            classesData: readLocalCache(),
+            statusLabel: 'DB 주소 확인 중...',
+            statusTone: 'text-amber-300',
+            lastSyncTime: nowTimeText(),
+            dbRef: null,
+            ready: false,
+            skipNextEcho: false,
+            loadedRemoteOnce: false
         };
 
-        function saveData(data) {
+        function saveCache(data) {
             try {
-                const serialized = JSON.stringify(data);
-                localStorage.setItem(PRIMARY_KEY, serialized);
-                if (hasAnyScore(data)) {
-                    localStorage.setItem(BACKUP_KEY, serialized);
-                }
-                state.lastSavedAt = nowTimeText();
+                const json = JSON.stringify(data);
+                localStorage.setItem(CACHE_KEY, json);
+                if (hasAnyScore(data)) localStorage.setItem(BACKUP_KEY, json);
+                state.lastSyncTime = nowTimeText();
+            } catch (e) {}
+        }
+
+        async function pushScore(data) {
+            saveCache(data);
+            if (!state.ready || !state.dbRef) {
+                state.statusLabel = '기기 임시 저장됨 (DB_URL 입력 시 실시간 동기화)';
+                state.statusTone = 'text-amber-300';
+                render();
+                return;
+            }
+            try {
+                state.skipNextEcho = true;
+                await set(state.dbRef, data);
+                state.statusLabel = '세 기기 실시간 동기화 완료';
+                state.statusTone = 'text-emerald-300';
+                state.lastSyncTime = nowTimeText();
             } catch (e) {
-                alert('아이패드 저장 공간 확인이 필요합니다. 사파리 비공개(시크릿) 모드는 꺼주세요.');
+                state.skipNextEcho = false;
+                state.statusLabel = '서버 전송 지연 · 기기 저장 보관 중';
+                state.statusTone = 'text-rose-300';
+            }
+            render();
+        }
+
+        function connectDatabase() {
+            const cleanUrl = (DB_URL || "").trim().replace(/\/+$/, "");
+            if (!cleanUrl || !cleanUrl.startsWith("http")) {
+                state.statusLabel = 'DB_URL 미입력 · 기기 저장 모드';
+                state.statusTone = 'text-amber-300';
+                render();
+                return;
+            }
+
+            try {
+                const app = initializeApp({ databaseURL: cleanUrl });
+                const db = getDatabase(app, cleanUrl);
+                state.dbRef = ref(db, DB_PATH);
+                state.ready = true;
+                state.statusLabel = '데이터베이스 연결 중...';
+                state.statusTone = 'text-sky-300';
+                render();
+
+                onValue(state.dbRef, (snapshot) => {
+                    if (state.skipNextEcho) {
+                        state.skipNextEcho = false;
+                        return;
+                    }
+
+                    const remoteRaw = snapshot.val();
+                    const remoteClean = remoteRaw ? sanitizeData(remoteRaw) : null;
+                    const remoteHas = remoteClean ? hasAnyScore(remoteClean) : false;
+                    const localHas = hasAnyScore(state.classesData);
+
+                    if (remoteHas) {
+                        state.classesData = remoteClean;
+                        saveCache(remoteClean);
+                        state.statusLabel = '세 기기 실시간 동기화 중';
+                        state.statusTone = 'text-emerald-300';
+                        state.loadedRemoteOnce = true;
+                        render();
+                    } else if (!state.loadedRemoteOnce && localHas) {
+                        state.loadedRemoteOnce = true;
+                        set(state.dbRef, state.classesData).catch(() => {});
+                        state.statusLabel = '기기 점수 서버 반영 완료';
+                        state.statusTone = 'text-emerald-300';
+                        render();
+                    } else {
+                        state.loadedRemoteOnce = true;
+                        if (remoteClean) {
+                            state.classesData = remoteClean;
+                            saveCache(remoteClean);
+                        }
+                        state.statusLabel = '데이터베이스 연결됨 (실시간 동기화)';
+                        state.statusTone = 'text-emerald-300';
+                        render();
+                    }
+                }, () => {
+                    state.statusLabel = 'DB 주소/규칙 확인 필요 · 기기 저장 중';
+                    state.statusTone = 'text-rose-300';
+                    render();
+                });
+            } catch (e) {
+                state.ready = false;
+                state.statusLabel = 'DB 주소 형식 확인 필요 · 기기 저장 중';
+                state.statusTone = 'text-rose-300';
+                render();
             }
         }
 
         function calcDrawScore(c) {
-            const count = Number(c) || 0;
-            if (count >= 4) return 40;
-            if (count === 3) return 35;
-            if (count === 2) return 30;
-            if (count === 1) return 25;
+            const n = Number(c) || 0;
+            if (n >= 4) return 40;
+            if (n === 3) return 35;
+            if (n === 2) return 30;
+            if (n === 1) return 25;
             return 20;
         }
 
         function calcGuardScore(c) {
-            const count = Number(c) || 0;
-            if (count >= 4) return 40;
-            if (count === 3) return 35;
-            if (count === 2) return 30;
-            if (count === 1) return 25;
+            const n = Number(c) || 0;
+            if (n >= 4) return 40;
+            if (n === 3) return 35;
+            if (n === 2) return 30;
+            if (n === 1) return 25;
             return 20;
         }
 
         function calcTakeoutScore(c) {
-            const count = Number(c) || 0;
-            if (count >= 3) return 20;
-            if (count === 2) return 15;
+            const n = Number(c) || 0;
+            if (n >= 3) return 20;
+            if (n === 2) return 15;
             return 10;
         }
 
@@ -231,27 +309,27 @@
             return "C";
         }
 
-        function selectClass(c) {
+        window.selectClass = function(c) {
             state.selectedClass = c;
             render();
-        }
+        };
 
-        function changeScore(num, cat, delta) {
+        window.changeScore = function(num, cat, delta) {
             const cNum = state.selectedClass;
             if (!state.classesData[cNum]) state.classesData[cNum] = {};
             if (!state.classesData[cNum][num]) state.classesData[cNum][num] = { ...DEFAULT_COUNTS };
 
             const maxVal = (cat === 'takeout') ? 3 : 4;
-            const currentVal = Number(state.classesData[cNum][num][cat]) || 0;
-            const nextVal = Math.min(maxVal, Math.max(0, currentVal + delta));
-            if (nextVal === currentVal) return;
+            const cur = Number(state.classesData[cNum][num][cat]) || 0;
+            const nxt = Math.min(maxVal, Math.max(0, cur + delta));
+            if (nxt === cur) return;
 
-            state.classesData[cNum][num][cat] = nextVal;
-            saveData(state.classesData);
+            state.classesData[cNum][num][cat] = nxt;
             render();
-        }
+            pushScore(state.classesData);
+        };
 
-        function downloadExcel(cNum) {
+        window.downloadExcel = function(cNum) {
             const roster = INITIAL_ROSTERS[cNum] || [];
             const excelRows = roster.map(st => {
                 const rawData = (state.classesData[cNum] && state.classesData[cNum][st.number]) || DEFAULT_COUNTS;
@@ -285,7 +363,7 @@
             const workbook = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(workbook, worksheet, `1-${cNum}반`);
             XLSX.writeFile(workbook, `울산여상_1학년_${cNum}반_컬링_수행평가.xlsx`);
-        }
+        };
 
         function render() {
             const app = document.getElementById('app');
@@ -296,7 +374,6 @@
 
             app.innerHTML = `
                 <div class="flex flex-col flex-grow bg-slate-950 text-white min-h-screen">
-                    <!-- 헤더 -->
                     <div class="p-3.5 bg-slate-900 border-b border-slate-800 sticky top-0 z-10 shadow-md space-y-2">
                         <div class="flex justify-between items-center gap-2">
                             <div>
@@ -307,13 +384,12 @@
                                 📊 ${cNum}반 엑셀 다운
                             </button>
                         </div>
-                        <div class="text-[10px] text-emerald-300 bg-slate-950/80 px-2.5 py-1.5 rounded-lg border border-slate-800 flex justify-between items-center">
-                            <span>● 아이패드 자동 저장 중 (마지막 저장: ${state.lastSavedAt})</span>
-                            <span class="text-slate-400">오프라인 사용 가능</span>
+                        <div class="text-[10px] bg-slate-950/90 px-2.5 py-1.5 rounded-lg border border-slate-800 flex justify-between items-center gap-2">
+                            <span class="${state.statusTone} font-medium truncate">● ${state.statusLabel}</span>
+                            <span class="text-slate-400 shrink-0">${state.lastSyncTime}</span>
                         </div>
                     </div>
 
-                    <!-- 반 선택 탭 (1~9반) -->
                     <div class="bg-slate-900/90 p-2.5 flex overflow-x-auto space-x-1.5 border-b border-slate-800">
                         ${[1,2,3,4,5,6,7,8,9].map(c => `
                             <button onclick="selectClass(${c})" class="px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${c===cNum?'bg-indigo-600 text-white shadow':'bg-slate-800 text-slate-400 hover:bg-slate-700'}">
@@ -322,7 +398,6 @@
                         `).join('')}
                     </div>
 
-                    <!-- 학생 채점 리스트 -->
                     <div class="p-4 flex-grow overflow-y-auto space-y-3 pb-12">
                         <div class="flex justify-between items-center py-1">
                             <span class="text-xs font-bold text-slate-300">1학년 ${cNum}반 학생 (${roster.length}명)</span>
@@ -400,8 +475,8 @@
             `;
         }
 
-        saveData(state.classesData);
         render();
+        connectDatabase();
     </script>
 </body>
 </html>
